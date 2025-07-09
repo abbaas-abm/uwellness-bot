@@ -1,7 +1,6 @@
 // Production-Ready WhatsApp + Gemini AI Chatbot
 // Uwellness Bot - Hosted on Render
 
-// 📁 File: index.js
 require("dotenv").config();
 const express = require("express");
 const bodyParser = require("body-parser");
@@ -26,17 +25,27 @@ const chatHistories = {}; // { '2764xxxxxx': [ { role: 'user', content: '' }, ..
 
 // 📩 Send WhatsApp Text Message
 async function sendTextMessage(to, body) {
-  await axios.post(`https://graph.facebook.com/v17.0/${PHONE_ID}/messages`, {
-    messaging_product: "whatsapp",
-    to,
-    type: "text",
-    text: { body },
-  }, {
-    headers: {
-      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-  });
+  try {
+    const res = await axios.post(
+      `https://graph.facebook.com/v17.0/${PHONE_ID}/messages`,
+      {
+        messaging_product: "whatsapp",
+        to,
+        type: "text",
+        text: { body },
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    console.log("📤 WhatsApp message sent:", res.data);
+  } catch (err) {
+    console.error("❌ Failed to send WhatsApp message:", err.response?.data || err.message);
+  }
 }
 
 // ✅ Webhook Verification (GET)
@@ -54,18 +63,35 @@ app.get("/webhook", (req, res) => {
 
 // 🤖 Handle Incoming Messages (POST)
 app.post("/webhook", async (req, res) => {
+  console.log("📩 Incoming Webhook Payload:");
+  console.log(JSON.stringify(req.body, null, 2));
+
   try {
     const messageObj = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-    if (!messageObj) return res.sendStatus(200);
+
+    if (!messageObj) {
+      console.log("⚠️ No message object found in payload.");
+      return res.sendStatus(200);
+    }
 
     const userPhone = messageObj.from;
     const userMessage = messageObj.text?.body;
-    if (!userMessage) return res.sendStatus(200);
+
+    if (!userMessage) {
+      console.log("⚠️ No text body in the message.");
+      return res.sendStatus(200);
+    }
+
+    console.log(`💬 Message from ${userPhone}: ${userMessage}`);
 
     // Initialize history if needed
     if (!chatHistories[userPhone]) {
       chatHistories[userPhone] = [
-        { role: "system", content: "You are Uwellness, a caring mental health chatbot for students. Offer emotional support, kind words, and thoughtful responses." },
+        {
+          role: "system",
+          content:
+            "You are Uwellness, a caring mental health chatbot for students. Offer emotional support, kind words, and thoughtful responses.",
+        },
       ];
     }
 
@@ -77,15 +103,19 @@ app.post("/webhook", async (req, res) => {
     const result = await chat.sendMessage(userMessage);
     const geminiReply = result.response.text();
 
+    console.log(`🤖 Gemini reply: ${geminiReply}`);
+
     // Add Gemini's response to history
     chatHistories[userPhone].push({ role: "assistant", content: geminiReply });
 
     // Send reply back via WhatsApp
     await sendTextMessage(userPhone, geminiReply);
 
+    console.log("✅ Message sent via WhatsApp.");
     res.sendStatus(200);
   } catch (err) {
     console.error("❌ Error handling message:", err.message);
+    await sendTextMessage(userPhone, "Oops! Something went wrong. Please try again later.");
     res.sendStatus(500);
   }
 });
