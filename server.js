@@ -21,7 +21,7 @@ const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 
 // 🧠 Chat History (Temporary, per user in memory)
-const chatHistories = {}; // { '2764xxxxxx': [ { role: 'user', content: '' }, ... ] }
+const chatHistories = {}; // { '2764xxxxxx': [ { role: 'user', parts: [{ text: '' }] }, ... ] }
 
 // 📩 Send WhatsApp Text Message
 async function sendTextMessage(to, body) {
@@ -44,6 +44,7 @@ async function sendTextMessage(to, body) {
 
         console.log("📤 WhatsApp message sent:", res.data);
     } catch (err) {
+        // Log more detailed error from WhatsApp API if available
         console.error("❌ Failed to send WhatsApp message:", err.response?.data || err.message);
     }
 }
@@ -55,8 +56,10 @@ app.get("/webhook", (req, res) => {
     const challenge = req.query["hub.challenge"];
 
     if (mode === "subscribe" && token === VERIFY_TOKEN) {
+        console.log("✅ Webhook verified!");
         return res.status(200).send(challenge);
     } else {
+        console.log("❌ Webhook verification failed.");
         return res.sendStatus(403);
     }
 });
@@ -66,14 +69,15 @@ app.post("/webhook", async (req, res) => {
     console.log("📩 Incoming Webhook Payload:");
     console.log(JSON.stringify(req.body, null, 2));
 
-    // Define userPhone here so it's accessible in the catch block
+    // Declare userPhone here so it's accessible in the catch block
     let userPhone = null;
 
     try {
         const messageObj = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
 
-        if (!messageObj) {
-            console.log("⚠️ No message object found in payload.");
+        // Check if it's a message and not a status update or other webhook event
+        if (!messageObj || messageObj.type !== "text") {
+            console.log("⚠️ No text message object found or message is not of type 'text'.");
             return res.sendStatus(200);
         }
 
@@ -92,24 +96,23 @@ app.post("/webhook", async (req, res) => {
             chatHistories[userPhone] = []; // Start with an empty history array
         }
 
-        // Add user message to history
-        chatHistories[userPhone].push({ role: "user", content: userMessage });
+        // Add user message to history in the correct Gemini 'parts' format
+        chatHistories[userPhone].push({ role: "user", parts: [{ text: userMessage }] });
 
         // Use Gemini to generate reply with systemInstruction
         const chat = model.startChat({
             history: chatHistories[userPhone],
-            systemInstruction: "You are Uwellness, a caring mental health chatbot for students. Offer emotional support, kind words, and thoughtful responses.",
+            systemInstruction: "You are Uwellness, a caring mental health chatbot for students. Offer emotional support, kind words, and thoughtful responses. Keep your responses concise and to the point.",
         });
 
-        // Send the user's actual message to the chat session.
-        // The systemInstruction sets the persona for the entire session.
-        const result = await chat.sendMessage(userMessage);
+        // Send the user's actual message to the chat session in the correct Gemini 'parts' format
+        const result = await chat.sendMessage({ parts: [{ text: userMessage }] });
         const geminiReply = result.response.text();
 
         console.log(`🤖 Gemini reply: ${geminiReply}`);
 
-        // Add Gemini's response to history
-        chatHistories[userPhone].push({ role: "assistant", content: geminiReply });
+        // Add Gemini's response to history in the correct Gemini 'parts' format
+        chatHistories[userPhone].push({ role: "assistant", parts: [{ text: geminiReply }] });
 
         // Send reply back via WhatsApp
         await sendTextMessage(userPhone, geminiReply);
@@ -120,9 +123,9 @@ app.post("/webhook", async (req, res) => {
         console.error("❌ Error handling message:", err.message);
         // Only attempt to send an error message if userPhone is defined
         if (userPhone) {
-            await sendTextMessage(userPhone, "Oops! Something went wrong. Please try again later.");
+            await sendTextMessage(userPhone, "Oops! Something went wrong on my end. Please try again later or contact support.");
         } else {
-            console.error("Could not send error message because userPhone was not defined.");
+            console.error("Could not send error message because userPhone was not defined or message parsing failed early.");
         }
         res.sendStatus(500);
     }
